@@ -1,0 +1,38 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Frontend build & modules
+frontend/node_modules/
+frontend/dist/
+frontend/.eslintcache
+
+# Logs & temporary files
+*.log
+*.csv
+*.json
+!master_boats_db.json
+
+# Environment variables & secrets
+.env
+.env.*
+bq_credentials.json
