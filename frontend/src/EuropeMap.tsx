@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 // @ts-nocheck
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Tooltip } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -82,11 +82,12 @@ const COUNTRY_COORDS: Record<string, [number, number]> = {
 
 interface EuropeMapProps {
   countriesData: { name: string; count: number; percentage: number }[];
+  listings?: any[];
   isDark: boolean;
   lang: 'it' | 'en';
 }
 
-export default function EuropeMap({ countriesData, isDark, lang }: EuropeMapProps) {
+export default function EuropeMap({ countriesData, listings, isDark, lang }: EuropeMapProps) {
   // Fix per un warning noto di React StrictMode con Leaflet che non re-renderizza bene la mappa se cambiano le dimensioni
   const [mapRendered, setMapRendered] = useState(false);
 
@@ -96,23 +97,56 @@ export default function EuropeMap({ countriesData, isDark, lang }: EuropeMapProp
     return () => clearTimeout(timer);
   }, []);
 
+  // Prepariamo i marker per le singole barche (scattered)
+  const boatMarkers = useMemo(() => {
+    if (!listings || listings.length === 0) return [];
+    return listings.map((boat, i) => {
+      const nameLower = (boat.country || '').toLowerCase();
+      let coords = COUNTRY_COORDS[nameLower];
+      if (!coords) {
+        const foundKey = Object.keys(COUNTRY_COORDS).find(k => nameLower.includes(k) || k.includes(nameLower.replace('-', ' ')));
+        coords = foundKey ? COUNTRY_COORDS[foundKey] : null as any;
+      }
+      if (!coords) {
+         const noDash = nameLower.replace(/-/g, ' ');
+         if (COUNTRY_COORDS[noDash]) coords = COUNTRY_COORDS[noDash];
+      }
+      
+      // Fallback center se non trovato
+      if (!coords) coords = [46.0, 9.0];
+
+      // Jitter (sparpagliamento) per non sovrapporre le barche (circa +/- 2.5 gradi, dipende dalla nazione)
+      // Generiamo un seed pseudo-casuale basato sul nome/id per mantenerlo stabile al re-render
+      const seed = (boat.id ? boat.id.toString().charCodeAt(0) : i) + i;
+      const random = () => {
+         const x = Math.sin(seed * 9999) * 10000;
+         return x - Math.floor(x);
+      };
+      
+      const jLat = (Math.random() - 0.5) * 4.0;
+      const jLng = (Math.random() - 0.5) * 4.0;
+
+      return {
+        ...boat,
+        coords: [coords[0] + jLat, coords[1] + jLng]
+      };
+    });
+  }, [listings]);
+
   if (!mapRendered) return <div className="w-full h-[250px] animate-pulse bg-slate-200/20 rounded-xl" />;
 
-  // Prepariamo i marker validi
+  // Prepariamo i marker aggregati (nazioni)
   let maxCount = 0;
-  const markers = countriesData.map(c => {
+  const aggregateMarkers = countriesData.map(c => {
     if (c.count > maxCount) maxCount = c.count;
     const nameLower = c.name.toLowerCase();
     
-    // Trova le coordinate corrispondenti (o default a centro Europa se non trovato per non spaccare)
     let coords = COUNTRY_COORDS[nameLower];
     if (!coords) {
-      // Prova a cercare una substring se c'è (es. "Italy (South)")
       const foundKey = Object.keys(COUNTRY_COORDS).find(k => nameLower.includes(k) || k.includes(nameLower.replace('-', ' ')));
       coords = foundKey ? COUNTRY_COORDS[foundKey] : null as any;
     }
     
-    // Se non lo trovo ancora provo a normalizzare i trattini e cercare di nuovo
     if (!coords) {
        const noDash = nameLower.replace(/-/g, ' ');
        if (COUNTRY_COORDS[noDash]) coords = COUNTRY_COORDS[noDash];
@@ -122,14 +156,12 @@ export default function EuropeMap({ countriesData, isDark, lang }: EuropeMapProp
       ...c,
       coords
     };
-  }).filter(m => m.coords); // Filtra quelli che non hanno coordinate note
+  }).filter(m => m.coords);
 
   // Centro la mappa in Europa (Nord Italia/Svizzera)
   const mapCenter: [number, number] = [46.0, 9.0]; 
   const zoomLevel = 4;
 
-  // Scegli lo stile della mappa base (Chiaro vs Scuro)
-  // CartoDB Positron è eccellente per le dashboard
   const tileUrl = isDark 
     ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
     : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
@@ -139,39 +171,64 @@ export default function EuropeMap({ countriesData, isDark, lang }: EuropeMapProp
       <MapContainer 
         center={mapCenter as any} 
         zoom={zoomLevel} 
-        scrollWheelZoom={false} // Evita di zoomare per sbaglio scrollando la pagina
+        scrollWheelZoom={false}
         className="w-full h-full absolute inset-0"
-        style={{ background: isDark ? '#1a1d24' : '#e5e7eb' }} // Colore di fallback se le tile non caricano
+        style={{ background: isDark ? '#1a1d24' : '#e5e7eb' }}
       >
         <TileLayer
           attribution='&copy; <a href=\"https://carto.com/\">CARTO</a>' as any
           url={tileUrl}
         />
         
-        {markers.map((marker, idx) => {
-          // Raggio base tra 8 e 25 pixel in base alla % di barche
+        {/* Aggregated Markers (Big circles) - solo se non ci sono le singole barche o come sfondo */}
+        {aggregateMarkers.map((marker, idx) => {
           const radius = 8 + (17 * (marker.count / (maxCount || 1)));
-          
           return (
             <CircleMarker
-              key={idx}
+              key={`agg-${idx}`}
               center={marker.coords}
               radius={radius as any}
               fillColor="#3b82f6" // Tailwind blue-500
-              fillOpacity={0.7}
-              color={isDark ? "#ffffff" : "#1e40af"} // Bordo bianco su scuro, blu scuro su chiaro
-              weight={2}
+              fillOpacity={listings?.length ? 0.2 : 0.7} // Più trasparente se ci sono barche singole
+              color={isDark ? "#ffffff" : "#1e40af"}
+              weight={listings?.length ? 1 : 2}
+              interactive={!listings?.length} // Disabilita tooltip aggregato se ci sono i punti singoli
             >
-              <Tooltip direction="top" offset={[0, -10] as any} opacity={1} as any>
-                <div className="text-center font-sans">
-                  <strong className="block text-sm">{marker.name}</strong>
-                  <span className="text-blue-600 font-bold">{marker.percentage}%</span> 
-                  <span className="text-slate-500 text-xs ml-1">({marker.count} {lang === 'it' ? 'barche' : 'boats'})</span>
-                </div>
-              </Tooltip>
+              {!listings?.length && (
+                <Tooltip direction="top" offset={[0, -10] as any} opacity={1} as any>
+                  <div className="text-center font-sans">
+                    <strong className="block text-sm">{marker.name}</strong>
+                    <span className="text-blue-600 font-bold">{marker.percentage}%</span> 
+                    <span className="text-slate-500 text-xs ml-1">({marker.count} {lang === 'it' ? 'barche' : 'boats'})</span>
+                  </div>
+                </Tooltip>
+              )}
             </CircleMarker>
           );
         })}
+
+        {/* Individual Boat Markers */}
+        {boatMarkers.map((boat, idx) => (
+          <CircleMarker
+            key={`boat-${idx}`}
+            center={boat.coords as any}
+            radius={5}
+            fillColor="#f59e0b" // Tailwind amber-500
+            fillOpacity={0.9}
+            color={isDark ? "#ffffff" : "#b45309"}
+            weight={1.5}
+          >
+            <Tooltip direction="top" offset={[0, -5] as any} opacity={1} as any>
+              <div className="text-center font-sans">
+                <strong className="block text-sm">{boat.builder} {boat.model}</strong>
+                <span className="text-amber-600 font-bold">{boat.price_eur ? new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(boat.price_eur) : 'N/D'}</span> 
+                <span className="text-slate-500 text-xs ml-1">({boat.year_built || 'N/D'})</span>
+                <span className="block text-xs mt-1 text-slate-400 capitalize">{boat.country || 'Sconosciuto'}</span>
+              </div>
+            </Tooltip>
+          </CircleMarker>
+        ))}
+
       </MapContainer>
     </div>
   );

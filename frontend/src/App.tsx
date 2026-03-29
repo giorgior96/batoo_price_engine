@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import axios from 'axios';
-import { Search, Anchor, Euro, Calendar, TrendingUp, TrendingDown, ChevronRight, Sun, Moon, AlertTriangle, MapPin, Ruler, Activity, Droplets, Zap, Download, ShieldCheck, FileText, Filter, Clock, X, Check, BarChart2, SlidersHorizontal, ChevronDown, ChevronUp, Star } from 'lucide-react';
+import { Search, Anchor, Euro, Calendar, TrendingUp, TrendingDown, ChevronRight, Sun, Moon, AlertTriangle, MapPin, Ruler, Activity, Droplets, Zap, Download, ShieldCheck, FileText, Filter, Clock, X, Check, BarChart2, SlidersHorizontal, ChevronDown, ChevronUp, Star, ExternalLink, Maximize, Minimize, Sailboat } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ComposedChart, Area, BarChart, Bar, Cell } from 'recharts';
+import { mp } from './analytics';
 
 const AnimatedCounter = ({ end, duration = 2000 }: { end: number, duration?: number }) => {
   const [count, setCount] = useState(0);
@@ -32,7 +33,7 @@ type SortOrder = 'year_desc' | 'price_asc' | 'price_desc';
 type Toast = { id: string; message: string; type: 'success' | 'error' | 'info' };
 
 // --- Constants ---
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8001';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
 
 const RECENT_SEARCHES_KEY = 'batoo_recent_searches';
 const SOURCE_COLORS: Record<string, string> = {
@@ -68,7 +69,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState('');
-  const [carouselImages, setCarouselImages] = useState<string[]>([]);
+
   const [totalBoatsDB, setTotalBoatsDB] = useState<number>(0);
 
   // --- Broker / Advanced filters ---
@@ -78,6 +79,8 @@ function App() {
   const [filterCountry, setFilterCountry] = useState('');
   const [priceMin, setPriceMin] = useState('');
   const [priceMax, setPriceMax] = useState('');
+  
+  // --- Advanced filters ---
   const [sources, setSources] = useState<{name: string; count: number}[]>([]);
   const [countries, setCountries] = useState<{name: string; count: number}[]>([]);
   // Legacy platform/country broker state (kept for compatibility)
@@ -99,6 +102,14 @@ function App() {
   const [sellerListingsSourceFilter, setSellerListingsSourceFilter] = useState('');
   const [sellerListingsLoading, setSellerListingsLoading] = useState(false);
 
+  // Evaluate (model search) listings pagination
+  const [evaluateListings, setEvaluateListings] = useState<any>(null);
+  const [evaluateListingsPage, setEvaluateListingsPage] = useState(1);
+  const [evaluateListingsSort, setEvaluateListingsSort] = useState('year_desc');
+  const [evaluateListingsLoading, setEvaluateListingsLoading] = useState(false);
+
+  // --- Map ---
+  const [isMapExpanded, setIsMapExpanded] = useState(false);
 
   // --- Sort & personal valuation ---
   const [sortOrder, setSortOrder] = useState<SortOrder>('year_desc');
@@ -151,10 +162,6 @@ function App() {
       if (res.data?.total_boats) setTotalBoatsDB(res.data.total_boats);
     }).catch(console.error);
 
-    axios.get(`${API_BASE_URL}/carousel-images`).then(res => {
-      if (res.data?.length > 0) setCarouselImages(res.data);
-    }).catch(console.error);
-
     axios.get(`${API_BASE_URL}/sources`).then(res => setSources(res.data)).catch(console.error);
     axios.get(`${API_BASE_URL}/countries`).then(res => setCountries(res.data)).catch(console.error);
 
@@ -164,18 +171,9 @@ function App() {
     } catch {}
   }, []);
 
-  // Sticky bar e PDF
-  const [isSticky, setIsSticky] = useState(false);
+  // PDF
   const [generatingPDF] = useState(false);
   const reportRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handleScroll = () => {
-      setIsSticky(window.scrollY > 150);
-    };
-    window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, []);
 
 
 
@@ -187,8 +185,15 @@ function App() {
   // Tema Chiaro/Scuro
   const [isDark, setIsDark] = useState(false);
   const [lang, setLang] = useState<"it" | "en">("it");
-  const toggleLang = () => setLang(l => l === "it" ? "en" : "it");
-  const toggleTheme = () => setIsDark(!isDark);
+  const toggleLang = () => {
+    const next = lang === 'it' ? 'en' : 'it';
+    mp.trackLangSwitch(next);
+    setLang(next);
+  };
+  const toggleTheme = () => {
+    mp.trackThemeSwitch(!isDark ? 'dark' : 'light');
+    setIsDark(!isDark);
+  };
 
   // Chiude i suggerimenti se si clicca fuori
   useEffect(() => {
@@ -233,6 +238,7 @@ function App() {
     setBrokerResult(null);
     setLoading(true);
     setError('');
+    mp.trackSearch(queryToUse, year, lang);
     try {
       let url = `${API_BASE_URL}/evaluate?q=${encodeURIComponent(queryToUse)}&lang=${lang}`;
       if (year && !directQuery) url += `&year=${year}`;
@@ -240,8 +246,14 @@ function App() {
       if (filterCountry) url += `&country_filter=${encodeURIComponent(filterCountry)}`;
       const res = await axios.get(url);
       setResult(res.data);
+      setEvaluateListings(null);
+      setEvaluateListingsPage(1);
+      setEvaluateListingsSort('year_desc');
       addRecentSearch(queryToUse);
+      mp.trackSearchResult(queryToUse, res.data.total_results_found, res.data.valuation?.average_price_eur, lang);
       addToast(`${res.data.total_results_found} annunci trovati`, 'success');
+      // Load paginata in background
+      loadEvaluateListings(queryToUse, year ? parseInt(year) : undefined, filterSource, filterCountry, 1, 'year_desc');
     } catch (err: any) {
       setResult(null);
       setError(err.response?.data?.detail || 'Errore durante la valutazione.');
@@ -278,6 +290,7 @@ function App() {
     setResult(null);
     setBrokerResult(null);
     setError('');
+    mp.trackSellerSearch(name, lang);
     try {
       const res = await axios.get(`${API_BASE_URL}/seller-stats?seller=${encodeURIComponent(name)}&lang=${lang}`);
       setSellerResult(res.data);
@@ -293,6 +306,30 @@ function App() {
       addToast(lang === 'it' ? 'Agenzia non trovata nel database' : 'Agency not found in database', 'error');
     } finally {
       setSellerLoading(false);
+    }
+  };
+
+  const loadEvaluateListings = async (
+    query: string,
+    yearVal: number | undefined,
+    srcFilter: string,
+    ctrFilter: string,
+    page: number,
+    sort: string,
+  ) => {
+    setEvaluateListingsLoading(true);
+    try {
+      let url = `${API_BASE_URL}/evaluate-listings?q=${encodeURIComponent(query)}&page=${page}&per_page=20&sort=${sort}`;
+      if (yearVal) url += `&year=${yearVal}`;
+      if (srcFilter) url += `&source_filter=${encodeURIComponent(srcFilter)}`;
+      if (ctrFilter) url += `&country_filter=${encodeURIComponent(ctrFilter)}`;
+      const res = await axios.get(url);
+      setEvaluateListings(res.data);
+      setEvaluateListingsPage(page);
+    } catch {
+      setEvaluateListings(null);
+    } finally {
+      setEvaluateListingsLoading(false);
     }
   };
 
@@ -316,6 +353,8 @@ function App() {
     }
   };
 
+
+
   const handleSuggestionClick = (suggestion: string) => {
     const query = suggestion.endsWith(` (${lang === 'it' ? 'cerca tutti' : 'search all'})`) ? suggestion.replace(` (${lang === 'it' ? 'cerca tutti' : 'search all'})`, '') : suggestion;
     setSearchQuery(query);
@@ -328,6 +367,7 @@ function App() {
   const generatePDF = () => {
     const printConfig = document.title;
     document.title = `Batoo-Report-${result.query.replace(/\s+/g, '-')}`;
+    mp.trackPDFExport(result.query);
     window.print();
     document.title = printConfig;
     addToast(lang === 'it' ? 'Report PDF in elaborazione...' : 'Processing PDF report...', 'info');
@@ -367,11 +407,17 @@ function App() {
       <ToastContainer toasts={toasts} remove={removeToast} />
 
       {/* Sfondo dinamico */}
-      <div
-        className={`no-print absolute inset-0 z-0 bg-cover bg-center bg-no-repeat transition-all duration-1000 ease-out ${result ? 'opacity-10 scale-105' : 'opacity-40 scale-100'}`}
-        style={{ backgroundImage: "url('https://images.unsplash.com/photo-1559253664-ca2fa90a1845?ixlib=rb-4.0.3&auto=format&fit=crop&w=2500&q=80')" }}
-      />
+      <div className={`no-print absolute inset-0 z-0 bg-cover bg-center bg-no-repeat transition-all duration-1000 ease-out ${result ? 'opacity-10 scale-105' : 'opacity-40 scale-100'}`} style={{ backgroundImage: "url('https://images.unsplash.com/photo-1559253664-ca2fa90a1845?ixlib=rb-4.0.3&auto=format&fit=crop&w=2500&q=80')" }} />
       <div className={`no-print absolute inset-0 bg-gradient-to-b ${themeClasses.overlay} z-0 pointer-events-none transition-colors duration-500`}></div>
+
+      {/* Global Animated Yacht */}
+      {!result && !sellerResult && (
+        <div className="no-print absolute inset-0 overflow-hidden pointer-events-none opacity-40 z-[1] mix-blend-overlay">
+           <div className="animate-sail-everywhere absolute w-32 h-12 md:w-48 md:h-16">
+              <img src="/yacht-top-view.svg" alt="yacht" className={`w-full h-full ${isDark ? 'brightness-75' : 'brightness-110 grayscale opacity-80'}`} />
+           </div>
+        </div>
+      )}
 
       {/* Pulsante Tema e Lingua */}
       <div className="no-print fixed top-3 right-3 sm:top-6 sm:right-6 z-50 flex gap-1.5 sm:gap-2">
@@ -390,10 +436,10 @@ function App() {
         </button>
       </div>
       {/* Area Contenuto Principale */}
-      <main className={`relative z-10 flex-1 flex flex-col items-center px-3 sm:px-6 lg:px-8 w-full transition-all duration-700 ease-in-out ${result ? 'justify-start pt-6 pb-20' : 'justify-center pt-16 sm:pt-0'}`}>
+      <main className={`relative z-10 flex-1 flex flex-col items-center px-3 sm:px-6 lg:px-8 w-full transition-all duration-700 ease-in-out ${result ? 'justify-start pt-6 pb-20' : 'justify-center pt-24 sm:pt-20'}`}>
         
         {/* Titolo e Logo */}
-        <div className={`no-print text-center transition-all duration-700 ease-[cubic-bezier(0.2,0.8,0.2,1)] ${result ? 'mb-4 transform scale-75 origin-top' : 'mb-8 sm:mb-12'}`}>
+        <div className={`no-print text-center transition-all duration-700 ease-[cubic-bezier(0.2,0.8,0.2,1)] ${result ? 'mb-4 mt-6 sm:mt-8 transform scale-[0.8] origin-top cursor-pointer hover:opacity-80' : 'mb-8 sm:mb-12'}`} onClick={() => { if (result) { setResult(null); setSearchQuery(''); } }}>
           <div className="flex flex-col items-center justify-center mb-3 sm:mb-4">
             <img 
               src="https://batoo.it/icons/batoo-logo-dark.svg?dpl=dpl_9aCViBvDC47Q54fZ2iSr4nXE9S5q" 
@@ -404,6 +450,13 @@ function App() {
               Price <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-500 to-cyan-400">Engine</span>
             </h1>
           </div>
+          {result && (
+            <div className="flex justify-center -mt-2 mb-2">
+              <span className={`text-[10px] font-bold uppercase tracking-widest ${themeClasses.textSubtle} bg-slate-500/10 px-3 py-1 rounded-full flex items-center gap-1`}>
+                <ChevronRight className="w-3 h-3 rotate-180" /> {lang === 'it' ? 'Torna alla Home' : 'Back to Home'}
+              </span>
+            </div>
+          )}
           {!result && (
             <div className="animate-[fadeInUp_0.5s_ease-out]">
               <div className="inline-flex flex-col items-center justify-center mb-4 sm:mb-6 py-2 px-4 sm:px-6 rounded-2xl bg-blue-500/10 border border-blue-500/20 backdrop-blur-sm">
@@ -452,8 +505,8 @@ function App() {
               <h3 className="font-bold text-xl mb-2">🏢 {lang === 'it' ? 'Cerca per Agenzia / Broker' : 'Search by Agency / Broker'}</h3>
               <p className={`text-sm ${themeClasses.textMuted} mb-6`}>
                 {lang === 'it'
-                  ? 'Digita il nome di un\'agenzia nautica per vedere il suo inventario e le statistiche di mercato.'
-                  : 'Type an agency name to see their full inventory and market statistics.'}
+                  ? 'Digita il nome di un\'agenzia nautica per scoprirne l\'inventario e il posizionamento sul mercato.'
+                  : 'Type an agency name to discover their inventory and market positioning.'}
               </p>
               <div className="relative">
                 <div className={`flex items-center gap-3 ${themeClasses.inputBg} border ${themeClasses.inputBorder} rounded-2xl px-4 shadow`}>
@@ -555,7 +608,7 @@ function App() {
                 {[
                   {label: lang==='it'?'Annunci totali':'Total listings', val: sellerResult.total_listings.toLocaleString('it-IT'), color:'text-blue-500'},
                   {label: lang==='it'?'Prezzo Medio':'Avg Price', val: formatPrice(sellerResult.avg_price), color:'text-emerald-500'},
-                  {label: lang === 'it' ? 'Mediana' : 'Median', val: formatPrice(sellerResult.median_price), color:'text-purple-500'},
+                  {label: lang === 'it' ? 'Valore Centrale' : 'Central Val', val: formatPrice(sellerResult.median_price), color:'text-purple-500'},
                   {label: lang === 'it' ? 'Range prezzi' : 'Price range', val: `${formatPrice(sellerResult.min_price)} – ${formatPrice(sellerResult.max_price)}`, color:'text-amber-500'},
                 ].map((m, i) => (
                   <div key={i} className={`${themeClasses.cardBg} border ${themeClasses.cardBorder} p-4 rounded-2xl`}>
@@ -652,36 +705,57 @@ function App() {
               ) : sellerListings?.listings?.length > 0 ? (
                 <div className="divide-y divide-slate-700/20">
                   {sellerListings.listings.map((boat: any, i: number) => (
-                    <a key={i} href={boat.url} target="_blank" rel="noopener noreferrer"
-                      className={`flex items-center gap-4 px-5 py-3.5 ${themeClasses.hoverBg} transition-colors`}>
-                      {boat.image_url ? (
-                        <img src={`${API_BASE_URL}/proxy-image?url=${encodeURIComponent(boat.image_url)}`} alt=""
-                          className="w-16 h-11 object-cover rounded-xl shrink-0" />
-                      ) : (
-                        <div className={`w-16 h-11 rounded-xl shrink-0 ${isDark ? 'bg-slate-700' : 'bg-slate-100'} flex items-center justify-center`}>
-                          <span className="text-xl">🚤</span>
+                    <div key={i} className={`flex flex-col border-b last:border-b-0 ${isDark ? 'border-slate-800' : 'border-slate-100'} ${themeClasses.hoverBg} transition-colors`}>
+                      <div onClick={() => window.open(boat.url, '_blank', 'noreferrer')} className="flex items-center gap-4 px-5 py-3.5 cursor-pointer group">
+                        {boat.image_url ? (
+                          <img src={`${API_BASE_URL}/proxy-image?url=${encodeURIComponent(boat.image_url)}`} alt=""
+                            className="w-16 h-11 object-cover rounded-xl shrink-0" />
+                        ) : (
+                          <div className={`w-16 h-11 rounded-xl shrink-0 ${isDark ? 'bg-slate-700' : 'bg-slate-100'} flex items-center justify-center`}>
+                            <span className="text-xl">🚤</span>
+                          </div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold text-sm truncate">{boat.builder} {boat.model}</p>
+                          <div className={`flex items-center gap-2 text-xs ${themeClasses.textSubtle} mt-0.5`}>
+                            <span>{boat.year_built || '—'}</span>
+                            {boat.length && <span>· {boat.length}m</span>}
+                            {boat.country && <span>· {boat.country}</span>}
+                            {boat.source && (
+                              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold" style={{ backgroundColor: getSourceColor(boat.source) + '22', color: getSourceColor(boat.source) }}>
+                                {boat.source}
+                              </span>
+                            )}
+                            {boat.is_duplicate && (
+                              <span title={lang === 'it' ? 'Escluso dalle medie: stessa barca rilevata su altro portale/broker' : 'Excluded from averages: same boat detected on another portal/broker'}
+                                className={`px-1.5 py-0.5 rounded-md text-[9px] uppercase font-extrabold tracking-wider border border-dashed cursor-help ${isDark ? 'text-slate-500 border-slate-600 bg-slate-800/40' : 'text-slate-400 border-slate-300 bg-slate-50'}`}>
+                                ⊘ {lang === 'it' ? 'duplicato' : 'duplicate'}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-sm truncate">{boat.builder} {boat.model}</p>
-                        <div className={`flex items-center gap-2 text-xs ${themeClasses.textSubtle} mt-0.5`}>
-                          <span>{boat.year_built || '—'}</span>
-                          {boat.length && <span>· {boat.length}m</span>}
-                          {boat.country && <span>· {boat.country}</span>}
-                          {boat.source && (
-                            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold" style={{ backgroundColor: getSourceColor(boat.source) + '22', color: getSourceColor(boat.source) }}>
-                              {boat.source}
-                            </span>
+                        <div className="shrink-0 text-right flex flex-col items-end justify-center">
+                          <div className={`font-bold text-sm ${boat.status === false ? 'line-through text-slate-400' : 'text-blue-500'}`}>
+                            {boat.price_eur ? formatPrice(boat.price_eur) : '—'}
+                          </div>
+                          {boat.market_alignment_percent !== null && boat.market_alignment_percent !== undefined && (
+                            <div className="mt-0.5" title={lang === 'it' ? `Valore di mercato stimato: ${formatPrice(boat.market_median_price)}` : `Estimated market value: ${formatPrice(boat.market_median_price)}`}>
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
+                                boat.market_alignment_percent < -5 ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20' :
+                                boat.market_alignment_percent > 5 ? 'bg-red-500/10 text-red-600 border border-red-500/20' :
+                                'bg-slate-500/10 text-slate-500 border border-slate-500/20'
+                              }`}>
+                                {boat.market_alignment_percent > 0 ? '+' : ''}{boat.market_alignment_percent}% {lang === 'it' ? 'vs mercato' : 'vs market'}
+                              </span>
+                            </div>
                           )}
+                          {boat.status === false && <span className="text-[10px] font-bold text-red-500 mt-0.5">{lang === 'it' ? 'RIMOSSO' : 'REMOVED'}</span>}
                         </div>
+                        <a href={boat.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="ml-2 p-2 rounded-lg hover:bg-blue-500/10 text-slate-400 hover:text-blue-500 transition-colors">
+                          <ExternalLink className="w-4 h-4" />
+                        </a>
                       </div>
-                      <div className="shrink-0 text-right">
-                        <div className={`font-bold text-sm ${boat.status === false ? 'line-through text-slate-400' : 'text-blue-500'}`}>
-                          {boat.price_eur ? formatPrice(boat.price_eur) : '—'}
-                        </div>
-                        {boat.status === false && <span className="text-[10px] font-bold text-red-500">VENDUTO</span>}
-                      </div>
-                    </a>
+                    </div>
                   ))}
                 </div>
               ) : (
@@ -719,8 +793,8 @@ function App() {
 
         {/* ===== SEARCH BAR (only for model tab) ===== */}
         {activeTab === 'model' && (
-        <div className={`no-print transition-all duration-700 z-40 flex flex-col items-center w-full ${result ? 'max-w-6xl' : 'max-w-3xl'} ${isSticky && result ? 'fixed top-0 left-0 right-0 !max-w-none px-3 sm:px-6 lg:px-8 py-2 sm:py-3 bg-slate-900/95 backdrop-blur-2xl border-b border-slate-700/50 shadow-2xl' : 'relative'}`}>
-           <div className={`w-full ${isSticky && result ? 'max-w-6xl mx-auto' : ''}`}>
+        <div className={`no-print transition-all duration-700 z-40 flex flex-col items-center w-full relative ${result ? 'max-w-6xl' : 'max-w-3xl'}`}>
+           <div className="w-full">
              <form onSubmit={(e) => handleEvaluate(e)} className="relative flex flex-col w-full gap-2 sm:gap-3">
                 <div className="relative w-full" ref={searchContainerRef}>
                   <div className={`relative shadow-lg rounded-2xl ${themeClasses.inputBg} border ${themeClasses.inputBorder} z-20`}>
@@ -760,27 +834,32 @@ function App() {
               </div>
               
               {/* Anno + Valuta — affiancati su mobile */}
-              <div className="flex gap-2 w-full">
-                <input 
-                  type="number"
-                  placeholder={lang === 'it' ? "Anno (Opz.)" : "Year (Opt.)"}
-                  className={`w-28 shrink-0 ${themeClasses.inputBg} border ${themeClasses.inputBorder} ${themeClasses.textMain} rounded-xl px-3 py-3 text-center text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 transition-all`}
-                  value={year}
-                  onChange={(e) => setYear(e.target.value)}
-                />
+              <div className="flex gap-2 sm:gap-3 w-full">
+                <div className={`relative shrink-0 w-32 sm:w-40 shadow-md sm:shadow-lg rounded-2xl ${themeClasses.inputBg} border ${themeClasses.inputBorder} z-20`}>
+                  <div className="absolute inset-y-0 left-0 pl-3 sm:pl-4 flex items-center pointer-events-none">
+                    <Calendar className={`w-4 h-4 sm:w-5 sm:h-5 transition-colors duration-300 ${year ? 'text-blue-500' : themeClasses.textSubtle}`} />
+                  </div>
+                  <input 
+                    type="number"
+                    placeholder={lang === 'it' ? "Anno (Opz.)" : "Year (Opt.)"}
+                    className={`w-full bg-transparent ${themeClasses.textMain} rounded-2xl py-3.5 sm:py-4 pl-9 sm:pl-11 pr-3 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all`}
+                    value={year}
+                    onChange={(e) => setYear(e.target.value)}
+                  />
+                </div>
                 <button 
                   type="submit"
                   disabled={loading || !searchQuery}
-                  className="flex-1 bg-blue-600 hover:bg-blue-500 text-white rounded-xl px-6 py-3 font-bold shadow-md hover:shadow-lg transition-all duration-300 disabled:opacity-50 flex items-center justify-center gap-2"
+                  className="flex-1 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl px-6 py-3.5 sm:py-4 font-bold shadow-md hover:shadow-lg transition-all duration-300 disabled:opacity-50 flex items-center justify-center gap-2"
                 >
-                  {loading ? <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div> : <><Search className="w-4 h-4" /> {lang === 'it' ? 'Valuta' : 'Evaluate'}</>}
+                  {loading ? <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div> : <><Search className="w-4 h-4 sm:w-5 sm:h-5" /> <span className="text-sm sm:text-base">{lang === 'it' ? 'Valuta' : 'Evaluate'}</span></>}
                 </button>
               </div>
            </form>
 
            {/* Advanced Filters Toggle */}
            <div className="mt-3 flex justify-center">
-             <button onClick={() => setShowFilters(!showFilters)}
+             <button onClick={() => { if (!showFilters) mp.trackFiltersOpen(); setShowFilters(!showFilters); }}
                className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold border transition-all ${showFilters ? 'bg-blue-600 text-white border-blue-600' : `${themeClasses.cardBg} ${themeClasses.cardBorder} ${themeClasses.textMuted} hover:border-blue-500`}`}>
                <Filter className="w-3 h-3" />
                {lang === 'it' ? 'Filtri Avanzati' : 'Advanced Filters'}
@@ -837,35 +916,27 @@ function App() {
            {!result && !loading && (
              <>
                <div className="mt-8 flex flex-wrap justify-center gap-3 animate-[fadeInUp_0.8s_ease-out]">
-                 <button onClick={() => handleEvaluate(undefined, "Axopar 37")} className={`px-4 py-2 rounded-full text-sm font-medium border ${themeClasses.cardBorder} ${themeClasses.cardBg} hover:border-blue-500 hover:text-blue-500 transition-colors flex items-center shadow-sm`}>
+                 <button onClick={() => { mp.trackQuickLink("Axopar 37"); handleEvaluate(undefined, "Axopar 37"); }} className={`px-4 py-2 rounded-full text-sm font-medium border ${themeClasses.cardBorder} ${themeClasses.cardBg} hover:border-blue-500 hover:text-blue-500 transition-colors flex items-center shadow-sm`}>
                    <Zap className="w-4 h-4 mr-1.5 text-yellow-500" /> {lang === 'it' ? 'Analizza' : 'Analyze'} Axopar 37
                  </button>
-                 <button onClick={() => handleEvaluate(undefined, "Beneteau Oceanis 41")} className={`px-4 py-2 rounded-full text-sm font-medium border ${themeClasses.cardBorder} ${themeClasses.cardBg} hover:border-blue-500 hover:text-blue-500 transition-colors flex items-center shadow-sm`}>
+                 <button onClick={() => { mp.trackQuickLink("Beneteau Oceanis 41"); handleEvaluate(undefined, "Beneteau Oceanis 41"); }} className={`px-4 py-2 rounded-full text-sm font-medium border ${themeClasses.cardBorder} ${themeClasses.cardBg} hover:border-blue-500 hover:text-blue-500 transition-colors flex items-center shadow-sm`}>
                    <Zap className="w-4 h-4 mr-1.5 text-blue-400" /> Beneteau Oceanis 41
                  </button>
-                 <button onClick={() => handleEvaluate(undefined, "Pershing 62")} className={`px-4 py-2 rounded-full text-sm font-medium border ${themeClasses.cardBorder} ${themeClasses.cardBg} hover:border-blue-500 hover:text-blue-500 transition-colors flex items-center shadow-sm`}>
+                 <button onClick={() => { mp.trackQuickLink("Pershing 62"); handleEvaluate(undefined, "Pershing 62"); }} className={`px-4 py-2 rounded-full text-sm font-medium border ${themeClasses.cardBorder} ${themeClasses.cardBg} hover:border-blue-500 hover:text-blue-500 transition-colors flex items-center shadow-sm`}>
                    <Zap className="w-4 h-4 mr-1.5 text-purple-500" /> Pershing 62
                  </button>
                </div>
 
-               {/* Portals & Scrolling Carousel */}
-               <div className="mt-16 w-full max-w-5xl mx-auto animate-[fadeInUp_1s_ease-out]">
-                 <p className={`text-center text-xs md:text-sm uppercase tracking-widest font-semibold mb-6 ${themeClasses.textSubtle}`}>
+               {/* Portals & Animated Boat */}
+               <div className="mt-auto pt-16 w-full max-w-5xl mx-auto animate-[fadeInUp_1s_ease-out] relative h-40">
+                 <p className={`text-center text-xs md:text-sm uppercase tracking-widest font-semibold mb-6 ${themeClasses.textSubtle} relative z-10`}>
                    {lang === 'it' ? 'Dati in tempo reale aggregati da' : 'Real-time data aggregated from'}
                  </p>
-                 <div className="flex flex-wrap justify-center items-center gap-8 md:gap-16 mb-10 opacity-70 hover:opacity-100 transition-opacity duration-500">
+                 <div className="flex flex-wrap justify-center items-center gap-8 md:gap-16 mb-10 opacity-70 hover:opacity-100 transition-opacity duration-500 relative z-10">
                    <span className="text-xl md:text-2xl font-black text-slate-400 tracking-tight">Boat24</span>
                    <span className="text-xl md:text-2xl font-black text-slate-400 tracking-tight">Yachtall</span>
                    <span className="text-xl md:text-2xl font-black text-slate-400 tracking-tight">Mondial Broker</span>
                    <span className="text-xl md:text-2xl font-black text-slate-400 tracking-tight">iNautia</span>
-                 </div>
-                 
-                 <div className="relative w-full overflow-hidden h-32 md:h-40 rounded-2xl mask-image-gradient">
-                   <div className="flex w-max animate-[scroll_40s_linear_infinite] space-x-4 hover:[animation-play-state:paused]">
-                     {(carouselImages.length > 0 ? [...carouselImages, ...carouselImages] : []).map((src, i) => (
-                       <img key={i} src={src} alt="boat" className={`h-full w-48 md:w-64 object-cover rounded-xl shadow-lg border ${themeClasses.cardBorder} hover:scale-105 transition-transform duration-500`} />
-                     ))}
-                   </div>
                  </div>
                </div>
              </>
@@ -1020,8 +1091,15 @@ function App() {
                 </p>
                 {result.valuation.market_share_countries?.length > 0 ? (
                   <div className="flex-1 w-full relative flex flex-col min-h-0">
-                    <div className="flex-1 w-full rounded-xl overflow-hidden mb-3 shadow-inner border border-slate-500/20 bg-slate-200 min-h-0">
-                       <EuropeMap countriesData={result.valuation.market_share_countries} isDark={isDark} lang={lang} />
+                    <div className="flex-1 w-full rounded-xl overflow-hidden mb-3 shadow-inner border border-slate-500/20 bg-slate-200 min-h-0 relative group">
+                       <EuropeMap countriesData={result.valuation.market_share_countries} listings={result.comparables} isDark={isDark} lang={lang} />
+                       <button 
+                         onClick={() => setIsMapExpanded(true)} 
+                         className="absolute top-2 right-2 p-2 bg-white/90 dark:bg-slate-800/90 rounded-lg shadow-md opacity-0 group-hover:opacity-100 transition-opacity z-[400] text-slate-800 dark:text-slate-200 hover:scale-105"
+                         title={lang === 'it' ? 'Espandi Mappa' : 'Expand Map'}
+                       >
+                         <Maximize className="w-4 h-4" />
+                       </button>
                     </div>
                     
                     {/* Legenda con Prezzi Medi per Nazione */}
@@ -1075,7 +1153,7 @@ function App() {
                 {result.valuation.median_price_eur && (
                   <div className="flex flex-wrap items-center gap-2 mb-3">
                     <span className={`text-xs ${themeClasses.textMuted} flex items-center gap-1`}>
-                      <SlidersHorizontal className="w-3 h-3" /> {lang === 'it' ? 'Mediana:' : 'Median:'}
+                      <SlidersHorizontal className="w-3 h-3" /> {lang === 'it' ? 'Valore Centrale:' : 'Central Val:'}
                     </span>
                     <span className="text-sm font-bold">{formatPrice(result.valuation.median_price_eur)}</span>
                     {Math.abs(result.valuation.average_price_eur - result.valuation.median_price_eur) / result.valuation.average_price_eur > 0.1 && (
@@ -1084,12 +1162,25 @@ function App() {
                   </div>
                 )}
                 <div className={`flex flex-wrap gap-x-3 gap-y-1 text-xs font-medium px-3 py-1.5 rounded-lg w-fit ${isDark ? 'bg-slate-900/50 text-slate-300' : 'bg-white/80 text-slate-600'}`}>
-                   <span>{lang === 'it' ? 'Su' : 'On'} <strong className={isDark ? 'text-white' : 'text-slate-900'}>{result.total_results_found}</strong> {lang === 'it' ? 'annunci' : 'listings'}</span>
+                   <span>{lang === 'it' ? 'Su' : 'On'} <strong className={isDark ? 'text-white' : 'text-slate-900'}>{result.total_results_found}</strong> {lang === 'it' ? 'annunci unici' : 'unique listings'}</span>
                    <span className="hidden sm:inline text-slate-500">|</span>
                    <span>Min: <strong>{formatPrice(result.valuation.min_price_eur)}</strong></span>
                    <span className="hidden sm:inline text-slate-500">|</span>
                    <span>Max: <strong>{formatPrice(result.valuation.max_price_eur)}</strong></span>
                 </div>
+                {result.duplicates_removed > 0 && (
+                  <div className={`flex items-center gap-1.5 text-[10px] font-semibold mt-1.5 px-2 py-1 rounded-lg w-fit ${
+                    isDark ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-amber-50 text-amber-600 border border-amber-200'
+                  }`}>
+                    <span>⚡</span>
+                    <span>
+                      {lang === 'it'
+                        ? `${result.duplicates_removed} duplicati cross-portale esclusi dalle medie`
+                        : `${result.duplicates_removed} cross-portal duplicates excluded from averages`
+                      }
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className={`${themeClasses.cardBg} border ${themeClasses.cardBorder} p-4 sm:p-6 rounded-3xl shadow-lg flex flex-col justify-center`}>
@@ -1124,13 +1215,13 @@ function App() {
             </div>
 
             {/* Grafico Trend e Lista Ottimizzata */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+            <div className="w-full gap-4 sm:gap-6 mb-4">
               
               <div className={`${themeClasses.cardBg} border ${themeClasses.cardBorder} p-4 sm:p-6 md:p-8 rounded-3xl shadow-lg`}>
                 <h3 className="text-sm sm:text-base font-semibold mb-1 flex items-center tracking-wide">
-                  <Activity className="w-4 h-4 sm:w-5 sm:h-5 mr-2 sm:mr-3 text-blue-500" /> {lang === 'it' ? 'Andamento Storico Prezzi + IQR' : 'Historical Price Trend + IQR'}
+                  <Activity className="w-4 h-4 sm:w-5 sm:h-5 mr-2 sm:mr-3 text-blue-500" /> {lang === 'it' ? 'Andamento Storico Prezzi' : 'Historical Price Trend'}
                 </h3>
-                <p className={`text-xs ${themeClasses.textSubtle} mb-4 sm:mb-5`}>{lang === 'it' ? 'Banda grigia = range interquartile (Q25–Q75)' : 'Gray band = interquartile range (Q25–Q75)'}</p>
+                <p className={`text-xs ${themeClasses.textSubtle} mb-4 sm:mb-5`}>{lang === 'it' ? 'Banda grigia = fascia di mercato principale' : 'Gray band = main market range'}</p>
                 <div className="h-[260px] sm:h-[330px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart data={result.valuation.price_trend?.length > 0 ? result.valuation.price_trend : []} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
@@ -1140,7 +1231,7 @@ function App() {
                       <Tooltip
                         formatter={(value: any, name: string | undefined) => [
                           formatPrice(Number(value)),
-                          name === 'avg_price' ? (lang === 'it' ? 'Mediana' : 'Median') : name === 'q75' ? 'Q75 (75°)' : name === 'q25' ? 'Q25 (25°)' : (name ?? '')
+                          name === 'avg_price' ? (lang === 'it' ? 'Valore Centrale' : 'Central Val') : name === 'q75' ? (lang === 'it' ? 'Fascia Alta' : 'High Range') : name === 'q25' ? (lang === 'it' ? 'Fascia Bassa' : 'Low Range') : (name ?? '')
                         ]}
                         labelFormatter={(label) => `${lang === 'it' ? 'Anno costruzione:' : 'Build year:'} ${label}`}
                         contentStyle={{ backgroundColor: themeClasses.tooltipBg, border: `1px solid ${isDark ? '#334155' : '#e2e8f0'}`, borderRadius: '12px', color: themeClasses.tooltipText, boxShadow: '0 4px 15px rgba(0,0,0,0.1)' }}
@@ -1158,83 +1249,156 @@ function App() {
                 </div>
               </div>
 
-              <div className={`${themeClasses.cardBg} border ${themeClasses.cardBorder} rounded-3xl shadow-lg flex flex-col h-[420px] md:h-[460px] overflow-hidden`}>
-                <div className={`px-6 py-4 border-b ${themeClasses.cardBorder} flex justify-between items-center bg-black/5`}>
-                  <h3 className="font-semibold flex items-center text-sm uppercase tracking-widest text-slate-400">
-                    {lang === "it" ? `Campione (${sortedComparables.length} annunci)` : `Sample (${sortedComparables.length} listings)`}
-                  </h3>
-                  <div className="flex items-center gap-2">
-                    <SlidersHorizontal className={`w-3.5 h-3.5 ${themeClasses.textSubtle}`} />
-                    <select value={sortOrder} onChange={e => setSortOrder(e.target.value as SortOrder)}
-                      className={`text-xs ${themeClasses.inputSelect} border rounded-lg px-2 py-1 focus:outline-none`}>
-                      <option value="year_desc">{lang === 'it' ? 'Anno ↓' : 'Year ↓'}</option>
-                      <option value="price_asc">{lang === 'it' ? 'Prezzo ↑' : 'Price ↑'}</option>
-                      <option value="price_desc">{lang === 'it' ? 'Prezzo ↓' : 'Price ↓'}</option>
-                    </select>
-                  </div>
-                </div>
+            </div>
 
-                <div className="overflow-y-auto flex-1 p-3 style-scrollbar">
-                  <div className="space-y-2">
-                    {sortedComparables.map((boat: any, idx: number) => (
-                      <a 
-                        key={idx} 
-                        href={boat.url} 
-                        target="_blank" 
-                        rel="noreferrer" 
-                        className={`flex items-center p-3 rounded-xl border border-transparent ${themeClasses.hoverBg} transition-colors group cursor-pointer`}
-                      >
-                        {boat.image_url ? (
-                          <img 
-                            src={`${API_BASE_URL}/proxy-image?url=${encodeURIComponent(boat.image_url)}`} 
-                            crossOrigin="anonymous"
-                            loading="lazy" 
-                            alt="boat" 
-                            className={`w-16 h-12 object-cover rounded-lg shadow-sm border ${themeClasses.cardBorder} opacity-90 group-hover:opacity-100 transition-opacity`} 
-                          />
-                        ) : (
-                          <div className={`w-16 h-12 ${isDark ? 'bg-slate-800' : 'bg-slate-200'} rounded-lg border ${themeClasses.cardBorder} flex items-center justify-center text-slate-500`}>
-                            <Anchor className="w-4 h-4"/>
-                          </div>
-                        )}
-                        <div className="ml-4 flex-1 min-w-0">
-                          <div className={`font-semibold truncate text-sm ${themeClasses.textMain} ${boat.status === false ? 'opacity-50 line-through' : ''}`}>
-                            {boat.builder} {boat.model}
-                          </div>
-                          <div className="flex items-center mt-1 space-x-3 text-xs">
-                            <span className={`flex items-center ${themeClasses.textSubtle}`}><Calendar className="w-3 h-3 mr-1"/>{boat.year_built}</span>
-                            {boat.length > 0 && <span className={`flex items-center ${themeClasses.textSubtle}`}><Ruler className="w-3 h-3 mr-1"/>{boat.length}m</span>}
-                            {boat.country && <span className={`flex items-center ${themeClasses.textSubtle} truncate max-w-[80px]`}><MapPin className="w-3 h-3 mr-1"/>{boat.country}</span>}
-                            {boat.source && <span className={`flex items-center ${themeClasses.textSubtle} truncate max-w-[100px]`}><FileText className="w-3 h-3 mr-1"/>{boat.source}</span>}
-                          </div>
-                        </div>
-                        <div className="ml-2 flex flex-col items-end whitespace-nowrap">
-                          <div className={`font-bold text-sm ${boat.status === false ? 'text-slate-400 line-through' : 'text-blue-500'}`}>
-                            {formatPrice(boat.price_eur)}
-                          </div>
-                          {boat.price_percentile !== null && boat.price_percentile !== undefined && boat.status !== false && (
-                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded mt-1 ${
-                              boat.price_percentile < 30 ? 'text-emerald-500 bg-emerald-500/10' :
-                              boat.price_percentile > 70 ? 'text-red-500 bg-red-500/10' :
-                              'text-amber-500 bg-amber-500/10'
-                            }`}>
-                              {boat.price_percentile}° perc.
-                            </span>
-                          )}
-                          {boat.status === false ? (
-                            <span className="text-[10px] font-semibold text-red-500 bg-red-500/10 px-1.5 py-0.5 rounded mt-1">{lang === "it" ? "VENDUTO" : "SOLD"}</span>
-                          ) : (
-                            boat.updated_at && boat.first_seen_at && boat.updated_at.split(' ')[0] !== boat.first_seen_at.split(' ')[0] ? (
-                              <span className="text-[10px] font-semibold text-amber-500 bg-amber-500/10 px-1.5 py-0.5 rounded mt-1">{lang === "it" ? "AGGIORNATO" : "UPDATED"}</span>
-                            ) : null
-                          )}
-                        </div>
-                      </a>
-                    ))}
-                  </div>
+            {/* Lista paginata completa annunci */}
+            <div className={`${themeClasses.cardBg} border ${themeClasses.cardBorder} rounded-3xl shadow-lg overflow-hidden`}>
+              {/* Header con controlli */}
+              <div className={`px-6 py-4 border-b ${themeClasses.cardBorder} flex flex-wrap items-center justify-between gap-3 bg-black/5`}>
+                <div>
+                  <h3 className="font-semibold text-sm">
+                    {evaluateListings
+                      ? `${evaluateListings.total.toLocaleString('it-IT')} ${lang === 'it' ? 'annunci trovati' : 'listings found'} (${lang === 'it' ? 'tutti i portali' : 'all portals'})`
+                      : (lang === 'it' ? 'Caricamento annunci...' : 'Loading listings...')}
+                  </h3>
+                  {evaluateListings && (
+                    <p className={`text-xs ${themeClasses.textSubtle}`}>
+                      {lang === 'it' ? 'Pagina' : 'Page'} {evaluateListings.page} {lang === 'it' ? 'di' : 'of'} {evaluateListings.total_pages}
+                      {evaluateListings.outlier_range && (
+                        <span className="ml-2 text-amber-500">
+                          · {lang === 'it' ? 'range di mercato' : 'market range'}: {formatPrice(evaluateListings.outlier_range.p5)}–{formatPrice(evaluateListings.outlier_range.p95)}
+                        </span>
+                      )}
+                      {result?.duplicates_removed > 0 && (
+                        <span className={`ml-2 font-semibold ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>
+                          · {lang === 'it'
+                              ? `medie calcolate su ${result.deduped_sample_size} barche uniche`
+                              : `averages based on ${result.deduped_sample_size} unique boats`
+                            }
+                        </span>
+                      )}
+                    </p>
+                  )}
                 </div>
+                <select value={evaluateListingsSort} onChange={e => {
+                  const newSort = e.target.value;
+                  setEvaluateListingsSort(newSort);
+                  loadEvaluateListings(
+                    searchQuery,
+                    year ? parseInt(year) : undefined,
+                    filterSource,
+                    filterCountry,
+                    1,
+                    newSort
+                  );
+                }} className={`text-xs ${themeClasses.inputSelect} border rounded-lg px-2 py-1.5 focus:outline-none`}>
+                  <option value="year_desc">{lang === 'it' ? 'Anno ↓' : 'Year ↓'}</option>
+                  <option value="year_asc">{lang === 'it' ? 'Anno ↑' : 'Year ↑'}</option>
+                  <option value="price_desc">{lang === 'it' ? 'Prezzo ↓' : 'Price ↓'}</option>
+                  <option value="price_asc">{lang === 'it' ? 'Prezzo ↑' : 'Price ↑'}</option>
+                </select>
               </div>
 
+              {/* Lista annunci */}
+              {evaluateListingsLoading ? (
+                <div className="flex items-center justify-center py-16">
+                  <div className="animate-spin h-8 w-8 border-b-2 border-blue-500 rounded-full" />
+                </div>
+              ) : evaluateListings?.listings?.length > 0 ? (
+                <div className="divide-y divide-slate-700/20">
+                  {evaluateListings.listings.map((boat: any, i: number) => (
+                    <div key={i} className={`flex flex-col border-b last:border-b-0 ${isDark ? 'border-slate-800' : 'border-slate-100'} ${themeClasses.hoverBg} transition-colors`}>
+                      <div onClick={() => window.open(boat.url, '_blank', 'noreferrer')} className="flex items-center gap-4 px-5 py-3.5 cursor-pointer group">
+                        {boat.image_url ? (
+                          <img src={`${API_BASE_URL}/proxy-image?url=${encodeURIComponent(boat.image_url)}`} alt=""
+                            className="w-16 h-11 object-cover rounded-xl shrink-0" loading="lazy" />
+                        ) : (
+                          <div className={`w-16 h-11 rounded-xl shrink-0 ${isDark ? 'bg-slate-700' : 'bg-slate-100'} flex items-center justify-center`}>
+                            <span className="text-xl">🚤</span>
+                          </div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold text-sm truncate">{boat.builder} {boat.model}</p>
+                          <div className={`flex items-center gap-2 text-xs ${themeClasses.textSubtle} mt-0.5 flex-wrap`}>
+                            <span>{boat.year_built || '—'}</span>
+                            {boat.length && <span>· {boat.length}m</span>}
+                            {boat.country && <span>· {boat.country}</span>}
+                            {boat.source && (
+                              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold" style={{ backgroundColor: getSourceColor(boat.source) + '22', color: getSourceColor(boat.source) }}>
+                                {boat.source}
+                              </span>
+                            )}
+                            {boat.is_outlier && (
+                              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                                ⚠ {lang === 'it' ? 'fuori mercato' : 'out of market'}
+                              </span>
+                            )}
+                            {boat.is_duplicate && (
+                              <span title={lang === 'it' ? 'Escluso dalle medie: stessa barca rilevata su altro portale/broker' : 'Excluded from averages: same boat detected on another portal/broker'}
+                                className={`px-1.5 py-0.5 rounded-md text-[9px] uppercase font-extrabold tracking-wider border border-dashed cursor-help ${isDark ? 'text-slate-500 border-slate-600 bg-slate-800/40' : 'text-slate-400 border-slate-300 bg-slate-50'}`}>
+                                ⊘ {lang === 'it' ? 'duplicato' : 'duplicate'}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <div className={`font-bold text-sm ${
+                            boat.status === false ? 'line-through text-slate-400' :
+                            boat.is_outlier ? 'text-amber-500' : 'text-blue-500'
+                          }`}>
+                            {boat.price_eur ? formatPrice(boat.price_eur) : '—'}
+                          </div>
+                          {boat.price_percentile !== null && boat.price_percentile !== undefined && !boat.is_outlier && (
+                            <span className={`text-[10px] font-bold ${
+                              boat.price_percentile < 30 ? 'text-emerald-500' :
+                              boat.price_percentile > 70 ? 'text-red-500' : 'text-amber-500'
+                            }`}>{boat.price_percentile < 30 ? (lang === 'it' ? 'Prezzo Ottimo' : 'Great Price') :
+                                 boat.price_percentile > 70 ? (lang === 'it' ? 'Prezzo Alto' : 'High Price') :
+                                 (lang === 'it' ? 'In Linea' : 'In Line')}</span>
+                          )}
+                          {boat.status === false && <span className="block text-[10px] font-bold text-red-500">{lang === 'it' ? 'RIMOSSO' : 'REMOVED'}</span>}
+                        </div>
+                        <a href={boat.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="ml-2 p-2 rounded-lg hover:bg-blue-500/10 text-slate-400 hover:text-blue-500 transition-colors">
+                          <ExternalLink className="w-4 h-4" />
+                        </a>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className={`text-center py-12 ${themeClasses.textSubtle}`}>{lang === 'it' ? 'Nessun annuncio trovato' : 'No listings found'}</div>
+              )}
+
+              {/* Paginazione */}
+              {evaluateListings && evaluateListings.total_pages > 1 && (
+                <div className={`px-6 py-4 border-t ${themeClasses.cardBorder} flex items-center justify-center gap-2 flex-wrap`}>
+                  <button
+                    disabled={evaluateListings.page <= 1}
+                    onClick={() => loadEvaluateListings(searchQuery, year ? parseInt(year) : undefined, filterSource, filterCountry, evaluateListings.page - 1, evaluateListingsSort)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${evaluateListings.page <= 1 ? 'opacity-30 cursor-not-allowed' : `${themeClasses.cardBg} border ${themeClasses.cardBorder} hover:border-blue-500`}`}>
+                    {lang === 'it' ? '← Prec' : '← Prev'}
+                  </button>
+                  {Array.from({ length: Math.min(evaluateListings.total_pages, 7) }, (_, i) => {
+                    const p = evaluateListings.total_pages <= 7 ? i + 1 :
+                      evaluateListings.page <= 4 ? i + 1 :
+                      evaluateListings.page >= evaluateListings.total_pages - 3 ? evaluateListings.total_pages - 6 + i :
+                      evaluateListings.page - 3 + i;
+                    return (
+                      <button key={p}
+                        onClick={() => loadEvaluateListings(searchQuery, year ? parseInt(year) : undefined, filterSource, filterCountry, p, evaluateListingsSort)}
+                        className={`w-9 h-9 rounded-lg text-sm font-bold transition-all ${p === evaluateListings.page ? 'bg-blue-600 text-white shadow-blue-500/30 shadow-md' : `${themeClasses.cardBg} border ${themeClasses.cardBorder} hover:border-blue-500`}`}>
+                        {p}
+                      </button>
+                    );
+                  })}
+                  <button
+                    disabled={evaluateListings.page >= evaluateListings.total_pages}
+                    onClick={() => loadEvaluateListings(searchQuery, year ? parseInt(year) : undefined, filterSource, filterCountry, evaluateListings.page + 1, evaluateListingsSort)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${evaluateListings.page >= evaluateListings.total_pages ? 'opacity-30 cursor-not-allowed' : `${themeClasses.cardBg} border ${themeClasses.cardBorder} hover:border-blue-500`}`}>
+                    {lang === 'it' ? 'Succ →' : 'Next →'}
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Source Breakdown + Personal Valuation (appended after results) */}
@@ -1281,6 +1445,28 @@ function App() {
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Fullscreen Map Modal */}
+        {isMapExpanded && result && result.valuation.market_share_countries?.length > 0 && (
+          <div className="fixed inset-0 z-[9999] bg-slate-900/95 backdrop-blur-md p-4 sm:p-8 flex flex-col animate-[fadeInUp_0.2s_ease-out]">
+            <div className="flex justify-between items-center mb-4 max-w-6xl mx-auto w-full">
+              <h2 className="text-xl sm:text-2xl font-bold text-white flex items-center">
+                <MapPin className="w-6 h-6 mr-2 text-blue-500" />
+                {lang === 'it' ? 'Mappa delle Imbarcazioni' : 'Boats Map'} - {result.query.toUpperCase()}
+              </h2>
+              <button 
+                onClick={() => setIsMapExpanded(false)}
+                className="p-2 sm:px-4 sm:py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors flex items-center gap-2"
+              >
+                <Minimize className="w-5 h-5" />
+                <span className="hidden sm:inline font-medium">{lang === 'it' ? 'Chiudi' : 'Close'}</span>
+              </button>
+            </div>
+            <div className="flex-1 w-full max-w-6xl mx-auto bg-slate-200 dark:bg-slate-900 rounded-3xl overflow-hidden border border-slate-700/50 shadow-2xl relative">
+               <EuropeMap countriesData={result.valuation.market_share_countries} listings={result.comparables} isDark={isDark} lang={lang} />
+            </div>
           </div>
         )}
 
@@ -1400,7 +1586,7 @@ function App() {
                        )}
                        <div>
                          <p className={`font-bold text-xs text-slate-800 ${boat.status === false ? 'line-through opacity-60' : ''}`}>{boat.builder} {boat.model}</p>
-                         <p className="text-[10px] text-slate-500 mt-0.5 font-medium">{lang === "it" ? "Anno" : "Year"}: {boat.year_built} &bull; {lang === "it" ? "Luogo" : "Location"}: {boat.country || "N/D"} {boat.status === false ? (lang === "it" ? "(Venduto/Rimosso)" : "(Sold/Removed)") : ""} {boat.source && `• ${lang === "it" ? "Fonte" : "Source"}: ${boat.source}`}</p>
+                         <p className="text-[10px] text-slate-500 mt-0.5 font-medium">{lang === "it" ? "Anno" : "Year"}: {boat.year_built} &bull; {lang === "it" ? "Luogo" : "Location"}: {boat.country || "N/D"} {boat.status === false ? (lang === "it" ? "(Rimosso)" : "(Removed)") : ""} {boat.source && `• ${lang === "it" ? "Fonte" : "Source"}: ${boat.source}`}</p>
                        </div>
                     </div>
                     <div className={`font-black text-sm ${boat.status === false ? 'text-slate-400 line-through' : 'text-blue-600'}`}>
@@ -1412,7 +1598,7 @@ function App() {
             </div>
             
             <div className="mt-6 text-center text-[9px] text-slate-400 uppercase font-bold tracking-widest pt-4 border-t border-slate-200">
-               {lang === "it" ? "Generato tramite Batoo Price Engine B2B. I dati riportati sono frutto di analisi statistica." : "Generated via Batoo Price Engine B2B. The data reported are the result of statistical analysis."}
+               {lang === "it" ? "Generato tramite Batoo Price Engine B2B. I dati riportati rappresentano stime correnti di mercato." : "Generated via Batoo Price Engine B2B. Data reported represent current market estimates."}
             </div>
 
             {/* SECONDA PAGINA: Lista Completa */}
@@ -1438,7 +1624,7 @@ function App() {
                          )}
                          <div className="flex flex-col">
                            <p className={`font-bold text-sm text-slate-800 ${boat.status === false ? 'line-through opacity-60' : ''}`}>{boat.builder} {boat.model}</p>
-                           <p className="text-xs text-slate-500 mt-0.5 font-medium">{lang === "it" ? "Anno" : "Year"}: {boat.year_built} &bull; {lang === "it" ? "Luogo" : "Location"}: {boat.country || "N/D"} {boat.status === false ? (lang === "it" ? "(Venduto/Rimosso)" : "(Sold/Removed)") : ""} {boat.source && `• ${lang === "it" ? "Fonte" : "Source"}: ${boat.source}`}</p>
+                           <p className="text-xs text-slate-500 mt-0.5 font-medium">{lang === "it" ? "Anno" : "Year"}: {boat.year_built} &bull; {lang === "it" ? "Luogo" : "Location"}: {boat.country || "N/D"} {boat.status === false ? (lang === "it" ? "(Rimosso)" : "(Removed)") : ""} {boat.source && `• ${lang === "it" ? "Fonte" : "Source"}: ${boat.source}`}</p>
                            <a href={boat.url} target="_blank" rel="noreferrer" className="text-[10px] text-blue-500 hover:text-blue-700 underline mt-1 font-semibold flex items-center gap-1">
                              {lang === "it" ? "Clicca qui per visionare" : "Click here to view"} <ChevronRight className="w-3 h-3" />
                            </a>
@@ -1473,7 +1659,7 @@ function App() {
           </div>
           <div className="text-center sm:text-right">
             <p>{lang === 'it' ? 'Algoritmo proprietario' : 'Proprietary algorithm'} · <strong className={isDark ? 'text-white' : 'text-slate-700'}>{totalBoatsDB > 0 ? (Math.floor(totalBoatsDB/100)*100).toLocaleString('it-IT') + '+' : '...'}</strong> {lang === 'it' ? 'annunci in Europa' : 'listings in Europe'}.</p>
-            <p className="mt-0.5 opacity-75 hidden sm:block">{lang === 'it' ? "I dati forniti sono stime statistiche basate sull'analisi predittiva del mercato nautico." : "The provided data are statistical estimates based on predictive analysis of the nautical market."}</p>
+            <p className="mt-0.5 opacity-75 hidden sm:block">{lang === 'it' ? "I dati forniti sono valutazioni basate sull'andamento in tempo reale del mercato nautico." : "The provided data are valuations based on real-time nautical market trends."}</p>
           </div>
         </div>
       </footer>

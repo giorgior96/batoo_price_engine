@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 40" width="100" height="40">
+  <!-- Scia principale dell'acqua -->
+  <path d="M 0 20 L 25 20" stroke="rgba(59, 130, 246, 0.4)" stroke-width="6" stroke-linecap="round" fill="none" class="wake-line" />
+  <path d="M 0 12 L 35 17" stroke="rgba(59, 130, 246, 0.2)" stroke-width="3" stroke-linecap="round" fill="none" class="wake-line" />
+  <path d="M 0 28 L 35 23" stroke="rgba(59, 130, 246, 0.2)" stroke-width="3" stroke-linecap="round" fill="none" class="wake-line" />
+  
+  <!-- Scafo principale (Yacht a motore visto dall'alto, viaggia verso destra) -->
+  <path d="M 30 20 C 30 13, 50 8, 85 8 C 95 8, 98 15, 100 20 C 98 25, 95 32, 85 32 C 50 32, 30 27, 30 20 Z" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1.5"/>
+  
+  <!-- Ponte superiore -->
+  <path d="M 40 20 C 40 14, 55 11, 75 11 C 85 11, 90 16, 90 20 C 90 24, 85 29, 75 29 C 55 29, 40 26, 40 20 Z" fill="#ffffff" />
+  
+  <!-- Parabrezza scuro (a destra) -->
+  <path d="M 70 14 C 75 14, 80 17, 80 20 C 80 23, 75 26, 70 26 C 68 26, 68 14, 70 14 Z" fill="#1e293b" />
+  
+  <!-- Dettagli di poppa (piattaforma bagno a sinistra) -->
+  <path d="M 30 15 L 26 15 L 26 25 L 30 25 Z" fill="#94a3b8" />
+  
+  <!-- Divanetto pozzetto -->
+  <path d="M 35 15 L 42 15 L 42 25 L 35 25 Z" fill="#cbd5e1" />
+</svg>
