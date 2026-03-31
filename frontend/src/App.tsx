@@ -4,7 +4,43 @@ import { Search, Anchor, Euro, Calendar, TrendingUp, TrendingDown, ChevronRight,
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ComposedChart, Area, BarChart, Bar, Cell } from 'recharts';
 import { mp } from './analytics';
 
-const AnimatedCounter = ({ end, duration = 2000 }: { end: number, duration?: number }) => {
+type Language = 'it' | 'en';
+
+const LANG_OVERRIDE_KEY = 'batoo_lang_override';
+
+const getUrlLanguage = (): Language | null => {
+  if (typeof window === 'undefined') return null;
+
+  const langParam = new URLSearchParams(window.location.search).get('lang');
+  return langParam === 'it' || langParam === 'en' ? langParam : null;
+};
+
+const setUrlLanguage = (lang: Language) => {
+  if (typeof window === 'undefined') return;
+
+  const url = new URL(window.location.href);
+  url.searchParams.set('lang', lang);
+  window.history.replaceState({}, '', url.toString());
+};
+
+const detectInitialLanguage = (): Language => {
+  const urlLanguage = getUrlLanguage();
+  if (urlLanguage) return urlLanguage;
+  if (typeof window === 'undefined') return 'it';
+
+  try {
+    const saved = window.localStorage.getItem(LANG_OVERRIDE_KEY);
+    if (saved === 'it' || saved === 'en') return saved;
+  } catch {}
+
+  const browserLanguages = window.navigator.languages?.length
+    ? window.navigator.languages
+    : [window.navigator.language];
+
+  return browserLanguages.some(language => language?.toLowerCase().startsWith('it')) ? 'it' : 'en';
+};
+
+const AnimatedCounter = ({ end, duration = 2000, locale = 'it-IT' }: { end: number, duration?: number, locale?: string }) => {
   const [count, setCount] = useState(0);
 
   useEffect(() => {
@@ -24,7 +60,7 @@ const AnimatedCounter = ({ end, duration = 2000 }: { end: number, duration?: num
     requestAnimationFrame(animate);
   }, [end, duration]);
 
-  return <>{count.toLocaleString('it-IT')}</>;
+  return <>{count.toLocaleString(locale)}</>;
 };
 import EuropeMap from './EuropeMap';
 
@@ -184,9 +220,16 @@ function App() {
 
   // Tema Chiaro/Scuro
   const [isDark, setIsDark] = useState(false);
-  const [lang, setLang] = useState<"it" | "en">("it");
+  const [lang, setLang] = useState<Language>(() => detectInitialLanguage());
+  const numberLocale = lang === 'it' ? 'it-IT' : 'en-US';
+  const isUrlLangControlled = useRef(getUrlLanguage() !== null);
   const toggleLang = () => {
     const next = lang === 'it' ? 'en' : 'it';
+    try {
+      localStorage.setItem(LANG_OVERRIDE_KEY, next);
+    } catch {}
+    isUrlLangControlled.current = true;
+    setUrlLanguage(next);
     mp.trackLangSwitch(next);
     setLang(next);
   };
@@ -205,6 +248,13 @@ function App() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+  useEffect(() => {
+    document.documentElement.lang = lang;
+    if (isUrlLangControlled.current) {
+      setUrlLanguage(lang);
+    }
+  }, [lang]);
+
 
   // Fetch dei suggerimenti mentre si digita
   useEffect(() => {
@@ -463,7 +513,7 @@ function App() {
                 <span className={`text-xs font-bold uppercase tracking-widest ${themeClasses.textSubtle} mb-1`}>{lang === 'it' ? 'Database Aggiornato' : 'Database Updated'}</span>
                 <div className="flex items-baseline space-x-2">
                   <span className="text-2xl sm:text-3xl md:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-cyan-300">
-                    {totalBoatsDB > 0 ? <AnimatedCounter end={totalBoatsDB} duration={2500} /> : <span className="opacity-50">...</span>}
+                    {totalBoatsDB > 0 ? <AnimatedCounter end={totalBoatsDB} duration={2500} locale={numberLocale} /> : <span className="opacity-50">...</span>}
                   </span>
                   <span className={`text-sm font-semibold ${themeClasses.textMuted}`}>{lang === 'it' ? '+ barche analizzate' : '+ boats analyzed'}</span>
                 </div>
@@ -558,7 +608,7 @@ function App() {
                       <button key={i} className={`w-full text-left px-5 py-3 flex items-center justify-between ${themeClasses.hoverBg} transition-colors`}
                         onClick={() => { setSellerQuery(s.name); setShowSellerSuggestions(false); handleSellerSearch(s.name); }}>
                         <span className="font-medium text-sm">{s.name}</span>
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${themeClasses.textSubtle} ${isDark ? 'bg-slate-700' : 'bg-slate-100'}`}>{s.count.toLocaleString('it-IT')} {lang === 'it' ? 'annunci' : 'listings'}</span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${themeClasses.textSubtle} ${isDark ? 'bg-slate-700' : 'bg-slate-100'}`}>{s.count.toLocaleString(numberLocale)} {lang === 'it' ? 'annunci' : 'listings'}</span>
                       </button>
                     ))}
                   </div>
@@ -606,7 +656,7 @@ function App() {
               {/* Metriche */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                 {[
-                  {label: lang==='it'?'Annunci totali':'Total listings', val: sellerResult.total_listings.toLocaleString('it-IT'), color:'text-blue-500'},
+                  {label: lang==='it'?'Annunci totali':'Total listings', val: sellerResult.total_listings.toLocaleString(numberLocale), color:'text-blue-500'},
                   {label: lang==='it'?'Prezzo Medio':'Avg Price', val: formatPrice(sellerResult.avg_price), color:'text-emerald-500'},
                   {label: lang === 'it' ? 'Valore Centrale' : 'Central Val', val: formatPrice(sellerResult.median_price), color:'text-purple-500'},
                   {label: lang === 'it' ? 'Range prezzi' : 'Price range', val: `${formatPrice(sellerResult.min_price)} – ${formatPrice(sellerResult.max_price)}`, color:'text-amber-500'},
@@ -639,7 +689,7 @@ function App() {
                               <span className={`text-sm font-semibold ${sellerListingsSourceFilter === s.name ? 'text-blue-500' : ''}`}>{s.name}</span>
                               {sellerListingsSourceFilter === s.name && <span className="text-xs text-blue-500 font-bold">({lang === 'it' ? 'filtro attivo' : 'active filter'})</span>}
                             </div>
-                            <span className={`text-sm font-bold ${themeClasses.textSubtle}`}>{s.count.toLocaleString('it-IT')} {lang === 'it' ? 'annunci' : 'listings'}</span>
+                            <span className={`text-sm font-bold ${themeClasses.textSubtle}`}>{s.count.toLocaleString(numberLocale)} {lang === 'it' ? 'annunci' : 'listings'}</span>
                           </div>
                           <div className={`h-2 rounded-full ${isDark ? 'bg-slate-700' : 'bg-slate-100'} overflow-hidden`}>
                             <div className="h-full rounded-full transition-all duration-500 group-hover:opacity-80"
@@ -674,7 +724,7 @@ function App() {
               <div className={`px-6 py-4 border-b ${themeClasses.cardBorder} flex flex-wrap items-center justify-between gap-3 bg-black/5`}>
                 <div>
                   <h3 className="font-semibold text-sm">
-                    {sellerListings ? `${sellerListings.total.toLocaleString('it-IT')} ${lang === 'it' ? 'annunci totali' : 'total listings'}${sellerListingsSourceFilter ? ` · ${sellerListingsSourceFilter}` : ''}` : lang === 'it' ? 'Tutti gli annunci' : 'All listings'}
+                    {sellerListings ? `${sellerListings.total.toLocaleString(numberLocale)} ${lang === 'it' ? 'annunci totali' : 'total listings'}${sellerListingsSourceFilter ? ` · ${sellerListingsSourceFilter}` : ''}` : lang === 'it' ? 'Tutti gli annunci' : 'All listings'}
                   </h3>
                   {sellerListings && <p className={`text-xs ${themeClasses.textSubtle}`}>{lang === 'it' ? 'Pagina' : 'Page'} {sellerListings.page} {lang === 'it' ? 'di' : 'of'} {sellerListings.total_pages}</p>}
                 </div>
@@ -1258,7 +1308,7 @@ function App() {
                 <div>
                   <h3 className="font-semibold text-sm">
                     {evaluateListings
-                      ? `${evaluateListings.total.toLocaleString('it-IT')} ${lang === 'it' ? 'annunci trovati' : 'listings found'} (${lang === 'it' ? 'tutti i portali' : 'all portals'})`
+                      ? `${evaluateListings.total.toLocaleString(numberLocale)} ${lang === 'it' ? 'annunci trovati' : 'listings found'} (${lang === 'it' ? 'tutti i portali' : 'all portals'})`
                       : (lang === 'it' ? 'Caricamento annunci...' : 'Loading listings...')}
                   </h3>
                   {evaluateListings && (
@@ -1480,7 +1530,7 @@ function App() {
                 <h1 className="text-2xl font-black text-slate-800 ml-3">{lang === 'it' ? 'Report di Mercato:' : 'Market Report:'} {result.query.toUpperCase()}</h1>
               </div>
               <div className="text-right text-xs text-slate-500 font-medium">
-                {lang === 'it' ? 'Data Elaborazione:' : 'Processing Date:'} {new Date().toLocaleDateString('it-IT')}
+                {lang === 'it' ? 'Data Elaborazione:' : 'Processing Date:'} {new Date().toLocaleDateString(numberLocale)}
               </div>
             </div>
 
@@ -1658,7 +1708,7 @@ function App() {
             <span>Price Engine B2B</span>
           </div>
           <div className="text-center sm:text-right">
-            <p>{lang === 'it' ? 'Algoritmo proprietario' : 'Proprietary algorithm'} · <strong className={isDark ? 'text-white' : 'text-slate-700'}>{totalBoatsDB > 0 ? (Math.floor(totalBoatsDB/100)*100).toLocaleString('it-IT') + '+' : '...'}</strong> {lang === 'it' ? 'annunci in Europa' : 'listings in Europe'}.</p>
+            <p>{lang === 'it' ? 'Algoritmo proprietario' : 'Proprietary algorithm'} · <strong className={isDark ? 'text-white' : 'text-slate-700'}>{totalBoatsDB > 0 ? (Math.floor(totalBoatsDB/100)*100).toLocaleString(numberLocale) + '+' : '...'}</strong> {lang === 'it' ? 'annunci in Europa' : 'listings in Europe'}.</p>
             <p className="mt-0.5 opacity-75 hidden sm:block">{lang === 'it' ? "I dati forniti sono valutazioni basate sull'andamento in tempo reale del mercato nautico." : "The provided data are valuations based on real-time nautical market trends."}</p>
           </div>
         </div>
